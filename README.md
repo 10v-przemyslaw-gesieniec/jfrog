@@ -42,6 +42,9 @@ szczegóły w `docs/ARTIFACTORY.md` w repozytorium `rbal-speckit-toolkit`.
 
 ---
 
+> **Chcesz to wystawić w chmurze?** Railway nie uruchamia `docker-compose.yml` —
+> każdy serwis konfiguruje się osobno. Komplet kroków: [`railway/README.md`](railway/README.md).
+
 ## 1. Wymagania
 
 - Docker Desktop (uruchomiony)
@@ -276,3 +279,4 @@ Zmień `ARTIFACTORY_PORT` lub `READ_PROXY_PORT` w `.env`, potem
 | `.env.example` | wzorzec do repo |
 | `bootstrap.sh` | czeka na start, tworzy repo, sprawdza proxy |
 | `smoke-test.sh` | dowód, że publikacja wymaga poświadczeń, a odczyt nie |
+| `railway/` | wdrożenie tego samego układu na Railway — Dockerfile'e i **kroki manualne** ([railway/README.md](railway/README.md)) |

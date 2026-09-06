@@ -79,6 +79,9 @@ services:
       UPSTREAM: http://artifactory:8082
       ART_USER: ${ADMIN_USER:-admin}
       ART_PASSWORD: ${ADMIN_PASSWORD:?ustaw ADMIN_PASSWORD w .env}
+      # Lokalnie puste = odczyt anonimowy (port siedzi tylko na localhoscie).
+      # Na wdrozeniu publicznym USTAW token - patrz railway/README.md.
+      READ_TOKEN: ${READ_TOKEN:-}
       LISTEN_PORT: "8083"
     ports:
       - "${READ_PROXY_PORT:-8083}:8083"

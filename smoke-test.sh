@@ -12,10 +12,32 @@
 # ============================================================================
 set -uo pipefail
 cd "$(dirname "$0")"
-set -a; . ./.env; set +a
+# .env dostarcza wartosci domyslne, ale NIE nadpisuje tego, co juz jest
+# w srodowisku - dzieki temu ten sam skrypt dziala lokalnie i przeciw
+# zdalnej instancji:
+#   ARTIFACTORY_BASE_URL=https://... READ_TOKEN=... ./bootstrap.sh
+load_env() {
+  local line key val
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in *=*) ;; *) continue ;; esac
+    key="${line%%=*}"; val="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
+    case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+    [ -n "${!key+set}" ] || export "$key=$val"
+  done < "$1"
+}
 
-ART="http://localhost:${ARTIFACTORY_PORT:-8082}/artifactory"
-PROXY="http://localhost:${READ_PROXY_PORT:-8083}/artifactory"
+load_env .env
+
+# Zdalnie (Railway) ustaw ARTIFACTORY_BASE_URL i READ_BASE_URL.
+ART_BASE="${ARTIFACTORY_BASE_URL:-http://localhost:${ARTIFACTORY_PORT:-8082}}"
+READ_BASE="${READ_BASE_URL:-http://localhost:${READ_PROXY_PORT:-8083}}"
+ART="${ART_BASE%/}/artifactory"
+PROXY="${READ_BASE%/}/artifactory"
+PROXY_AUTH=()
+[ -n "${READ_TOKEN:-}" ] && PROXY_AUTH=(-H "Authorization: Bearer ${READ_TOKEN}")
 REPO="${REPO_KEY:-generic-local}"
 PATH_IN_REPO="smoke-test/hello.txt"
 TESTFILE="$(mktemp)"; echo "smoke test $(date)" > "$TESTFILE"
@@ -64,11 +86,15 @@ check     "admin: download (GET)"                  200 "$(hit GET "$TARGET" -u "
 check     "zle haslo -> 401"                       401 "$(hit GET "$TARGET" -u "${ADMIN_USER}:zupelnie-zle-haslo")"
 check_any "anonim na porcie publikacji: brak dostepu" "401 403" "$(hit GET "$TARGET")"
 
-check     "proxy: anonimowy download (GET)"        200 "$(hit GET "$PROXY_TARGET")"
-check     "proxy: ping bez poswiadczen"            200 "$(hit GET "${PROXY}/api/system/ping")"
-check     "proxy: upload zablokowany (PUT)"        405 "$(hit PUT "${PROXY}/${REPO}/hack.txt" -T "$TESTFILE")"
-check     "proxy: delete zablokowany"              405 "$(hit DELETE "$PROXY_TARGET")"
-check     "proxy: POST zablokowany"                405 "$(hit POST "${PROXY}/${REPO}/hack.txt" --data x)"
+check     "proxy: download (GET)"                  200 "$(hit GET "$PROXY_TARGET" "${PROXY_AUTH[@]}")"
+check     "proxy: ping"                            200 "$(hit GET "${PROXY}/api/system/ping" "${PROXY_AUTH[@]}")"
+check     "proxy: upload zablokowany (PUT)"        405 "$(hit PUT "${PROXY}/${REPO}/hack.txt" "${PROXY_AUTH[@]}" -T "$TESTFILE")"
+check     "proxy: delete zablokowany"              405 "$(hit DELETE "$PROXY_TARGET" "${PROXY_AUTH[@]}")"
+check     "proxy: POST zablokowany"                405 "$(hit POST "${PROXY}/${REPO}/hack.txt" "${PROXY_AUTH[@]}" --data x)"
+if [ -n "${READ_TOKEN:-}" ]; then
+  check   "proxy: bez tokenu -> 401"               401 "$(hit GET "$PROXY_TARGET")"
+  check   "proxy: zly token -> 401"                401 "$(hit GET "$PROXY_TARGET" -H 'Authorization: Bearer zly-token')"
+fi
 
 check     "admin: delete (porzadki)"               204 "$(hit DELETE "$TARGET" -u "${ADMIN_USER}:${ADMIN_PASS}")"
 

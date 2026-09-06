@@ -21,10 +21,31 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 [ -f .env ] || { echo "BLAD: brak pliku .env (skopiuj .env.example)" >&2; exit 1; }
-set -a; . ./.env; set +a
 
-BASE="http://localhost:${ARTIFACTORY_PORT:-8082}"
-PROXY="http://localhost:${READ_PROXY_PORT:-8083}"
+# .env dostarcza wartosci domyslne, ale NIE nadpisuje tego, co juz jest
+# w srodowisku - dzieki temu ten sam skrypt dziala lokalnie i przeciw
+# zdalnej instancji:
+#   ARTIFACTORY_BASE_URL=https://... READ_TOKEN=... ./bootstrap.sh
+load_env() {
+  local line key val
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in *=*) ;; *) continue ;; esac
+    key="${line%%=*}"; val="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
+    case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+    [ -n "${!key+set}" ] || export "$key=$val"
+  done < "$1"
+}
+
+load_env .env
+
+# Lokalnie budowane z portow z .env; dla wdrozenia zdalnego (Railway) podaj
+# pelne adresy w ARTIFACTORY_BASE_URL / READ_BASE_URL - w .env albo w srodowisku.
+BASE="${ARTIFACTORY_BASE_URL:-http://localhost:${ARTIFACTORY_PORT:-8082}}"
+PROXY="${READ_BASE_URL:-http://localhost:${READ_PROXY_PORT:-8083}}"
+BASE="${BASE%/}"; PROXY="${PROXY%/}"
 ART="${BASE}/artifactory"
 WAIT_SECONDS="${WAIT_SECONDS:-900}"
 
@@ -117,11 +138,18 @@ fi
 
 # ---------------------------------------------------------------------------
 step "4/4 Read-proxy (${PROXY})"
-if [ "$(curl -s -o /dev/null -w '%{http_code}' "${PROXY}/artifactory/api/system/ping")" = "200" ]; then
-  c_ok "[OK] read-proxy odpowiada i czyta Artifactory bez poswiadczen"
+PROXY_AUTH=()
+[ -n "${READ_TOKEN:-}" ] && PROXY_AUTH=(-H "Authorization: Bearer ${READ_TOKEN}")
+if [ "$(curl -s -o /dev/null -w '%{http_code}' "${PROXY_AUTH[@]}" "${PROXY}/artifactory/api/system/ping")" = "200" ]; then
+  if [ -n "${READ_TOKEN:-}" ]; then
+    c_ok "[OK] read-proxy odpowiada (chroniony tokenem READ_TOKEN)"
+  else
+    c_ok "[OK] read-proxy odpowiada i czyta Artifactory bez poswiadczen"
+  fi
 else
-  c_warn "[uwaga] read-proxy nie odpowiada. Sprawdz: docker compose ps read-proxy"
-  c_warn "        oraz docker compose logs read-proxy"
+  c_warn "[uwaga] read-proxy nie odpowiada pod ${PROXY}."
+  c_warn "        Lokalnie:  docker compose ps read-proxy && docker compose logs read-proxy"
+  c_warn "        Railway:   sprawdz READ_TOKEN po obu stronach i logi serwisu read-proxy"
 fi
 
 # ---------------------------------------------------------------------------

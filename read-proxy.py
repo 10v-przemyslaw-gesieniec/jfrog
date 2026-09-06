@@ -23,13 +23,21 @@ Configuration (env):
   UPSTREAM      e.g. http://artifactory:8082    (required)
   ART_USER      user to impersonate upstream    (required)
   ART_PASSWORD  that user's password            (required)
-  LISTEN_PORT   default 8083
-  LISTEN_ADDR   default 0.0.0.0
+  READ_TOKEN    when set, callers must send `Authorization: Bearer <READ_TOKEN>`;
+                anything else gets 401. Leave EMPTY only when the port is not
+                reachable from outside the machine - on a public deployment
+                (Railway et al.) it is the only thing standing between the
+                internet and your artifacts. Spec Kit speaks this natively via
+                ~/.specify/auth.json (provider "github", auth "bearer").
+  LISTEN_PORT   default: $PORT, else 8083       (Railway sets $PORT)
+  LISTEN_ADDR   default 0.0.0.0; use "::" for dual-stack / IPv6-only networks
 """
 from __future__ import annotations
 
 import base64
+import hmac
 import os
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -38,7 +46,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 UPSTREAM = os.environ.get("UPSTREAM", "").rstrip("/")
 ART_USER = os.environ.get("ART_USER", "")
 ART_PASSWORD = os.environ.get("ART_PASSWORD", "")
-PORT = int(os.environ.get("LISTEN_PORT", "8083"))
+READ_TOKEN = os.environ.get("READ_TOKEN", "").strip()
+# Railway (and most PaaS) inject $PORT; LISTEN_PORT still wins when set.
+PORT = int(os.environ.get("LISTEN_PORT") or os.environ.get("PORT") or "8083")
 ADDR = os.environ.get("LISTEN_ADDR", "0.0.0.0")
 
 if not UPSTREAM or not ART_USER or not ART_PASSWORD:
@@ -77,7 +87,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _authorised(self) -> bool:
+        """True when no token is configured, or the caller presented the right one."""
+        if not READ_TOKEN:
+            return True
+        header = self.headers.get("Authorization", "")
+        scheme, _, value = header.partition(" ")
+        if scheme.lower() != "bearer":
+            return False
+        # constant-time compare so the token cannot be guessed byte by byte
+        return hmac.compare_digest(value.strip(), READ_TOKEN)
+
     def _proxy(self):
+        if not self._authorised():
+            return self._refuse(401, "Bearer token required.\n")
         if self.command not in ALLOWED:
             return self._refuse(
                 405, "This port is read-only. Publish to Artifactory directly.\n")
@@ -112,7 +135,18 @@ class Handler(BaseHTTPRequestHandler):
     do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _proxy
 
 
+class Server(ThreadingHTTPServer):
+    # ":" in the address means IPv6; dual_stack lets one socket serve both
+    # families, which is what a Railway-style IPv6 network needs.
+    address_family = socket.AF_INET6 if ":" in ADDR else socket.AF_INET
+    daemon_threads = True
+
+
 if __name__ == "__main__":
-    print(f"read-proxy: {ADDR}:{PORT} -> {UPSTREAM} as {ART_USER} (GET/HEAD only)",
-          flush=True)
-    ThreadingHTTPServer((ADDR, PORT), Handler).serve_forever()
+    guard = "Bearer token required" if READ_TOKEN else "OPEN - no token required"
+    print(f"read-proxy: {ADDR}:{PORT} -> {UPSTREAM} as {ART_USER} "
+          f"(GET/HEAD only, {guard})", flush=True)
+    if not READ_TOKEN:
+        print("read-proxy: WARNING - READ_TOKEN is empty. Do not expose this port "
+              "to a public network.", flush=True)
+    Server((ADDR, PORT), Handler).serve_forever()
