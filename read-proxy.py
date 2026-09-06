@@ -35,6 +35,7 @@ Configuration (env):
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import os
 import socket
@@ -56,6 +57,20 @@ if not UPSTREAM or not ART_USER or not ART_PASSWORD:
 
 AUTH = "Basic " + base64.b64encode(f"{ART_USER}:{ART_PASSWORD}".encode()).decode()
 ALLOWED = {"GET", "HEAD"}
+
+
+def fingerprint(value: str) -> str:
+    """Identify a secret in logs without printing it.
+
+    A mismatched token is the single most common failure here, and "401" alone
+    cannot tell you whether the caller sent the wrong value, sent nothing, or
+    the deployment picked up a stale variable. Length plus a short digest
+    settles it: two fingerprints that differ prove the values differ, and the
+    digest is not reversible.
+    """
+    if not value:
+        return "brak"
+    return f"len={len(value)} sha256={hashlib.sha256(value.encode()).hexdigest()[:8]}"
 
 # Hop-by-hop headers are never forwarded (RFC 9110 7.6.1). Authorization is
 # dropped from the request so a client's own credentials are never honoured
@@ -93,10 +108,19 @@ class Handler(BaseHTTPRequestHandler):
             return True
         header = self.headers.get("Authorization", "")
         scheme, _, value = header.partition(" ")
+        if not header:
+            self.log_message("401: brak naglowka Authorization (oczekiwano %s)",
+                             fingerprint(READ_TOKEN))
+            return False
         if scheme.lower() != "bearer":
+            self.log_message("401: schemat %r zamiast Bearer", scheme[:20])
             return False
         # constant-time compare so the token cannot be guessed byte by byte
-        return hmac.compare_digest(value.strip(), READ_TOKEN)
+        if hmac.compare_digest(value.strip(), READ_TOKEN):
+            return True
+        self.log_message("401: token sie nie zgadza - otrzymano %s, skonfigurowano %s",
+                         fingerprint(value.strip()), fingerprint(READ_TOKEN))
+        return False
 
     def _proxy(self):
         if not self._authorised():
@@ -143,9 +167,12 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == "__main__":
-    guard = "Bearer token required" if READ_TOKEN else "OPEN - no token required"
+    guard = (f"Bearer wymagany [{fingerprint(READ_TOKEN)}]" if READ_TOKEN
+             else "OTWARTY - bez tokenu")
     print(f"read-proxy: {ADDR}:{PORT} -> {UPSTREAM} as {ART_USER} "
           f"(GET/HEAD only, {guard})", flush=True)
+    print("read-proxy: odcisk tokenu policzysz lokalnie:\n"
+          "  printf %s \"$READ_TOKEN\" | shasum -a 256 | cut -c1-8", flush=True)
     if not READ_TOKEN:
         print("read-proxy: WARNING - READ_TOKEN is empty. Do not expose this port "
               "to a public network.", flush=True)
