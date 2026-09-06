@@ -1,0 +1,92 @@
+# JFrog Artifactory OSS - lokalna instancja do developmentu
+#
+# Start:  docker compose up -d
+# Logi:   docker compose logs -f artifactory
+# Stop:   docker compose down          (dane zostaja w wolumenach)
+# Reset:  docker compose down -v       (USUWA wszystkie dane, takze baze)
+#
+# UWAGA: Artifactory 7.16x+ NIE wspiera juz wbudowanej bazy Derby - startuje
+# wylacznie na PostgreSQL. Bez tego serwis Access nie wstaje, nie tworzy
+# master key i caly start konczy sie petla "Master key is missing".
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: artifactory-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-artifactory}
+      POSTGRES_USER: ${DB_USER:-artifactory}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?ustaw DB_PASSWORD w .env}
+      # Artifactory wymaga sortowania bajtowego dla swoich indeksow
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-artifactory} -d ${DB_NAME:-artifactory}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  artifactory:
+    image: releases-docker.jfrog.io/jfrog/artifactory-oss:${ARTIFACTORY_VERSION:-latest}
+    container_name: artifactory-oss
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy    # baza musi odpowiadac, zanim Access ruszy
+    ports:
+      - "${ARTIFACTORY_PORT:-8082}:8082"   # JFrog Platform: UI + REST API
+      - "8081:8081"                        # bezposredni port Artifactory (legacy)
+    environment:
+      JF_SHARED_NODE_ID: artifactory-local
+      # --- baza danych (jedyna wspierana: PostgreSQL) ---
+      JF_SHARED_DATABASE_TYPE: postgresql
+      JF_SHARED_DATABASE_DRIVER: org.postgresql.Driver
+      JF_SHARED_DATABASE_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-artifactory}
+      JF_SHARED_DATABASE_USERNAME: ${DB_USER:-artifactory}
+      JF_SHARED_DATABASE_PASSWORD: ${DB_PASSWORD:?ustaw DB_PASSWORD w .env}
+      # Limity pamieci JVM. Nazwa nieprzestarzala - EXTRA_JAVA_OPTIONS jest
+      # mapowane na to samo, ale z ostrzezeniem w logach.
+      JF_SHARED_EXTRAJAVAOPTS: "-Xms512m -Xmx2g"
+    volumes:
+      - artifactory-data:/var/opt/jfrog/artifactory
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 32000
+        hard: 40000
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8082/artifactory/api/system/ping || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 180s
+
+  # Anonimowa, tylko-do-odczytu furtka dla Spec Kita. OSS blokuje API
+  # bezpieczenstwa, wiec nie da sie zalozyc konta read-only ani wydac tokena -
+  # to proxy dokleja poswiadczenia admina do zadan GET i odrzuca zapisy.
+  read-proxy:
+    image: python:3.12-alpine
+    container_name: artifactory-read-proxy
+    restart: unless-stopped
+    depends_on:
+      artifactory:
+        condition: service_started
+    command: ["python3", "/app/read-proxy.py"]
+    environment:
+      UPSTREAM: http://artifactory:8082
+      ART_USER: ${ADMIN_USER:-admin}
+      ART_PASSWORD: ${ADMIN_PASSWORD:?ustaw ADMIN_PASSWORD w .env}
+      LISTEN_PORT: "8083"
+    ports:
+      - "${READ_PROXY_PORT:-8083}:8083"
+    volumes:
+      - ./read-proxy.py:/app/read-proxy.py:ro
+
+volumes:
+  artifactory-data:
+    name: artifactory-oss-data
+  postgres-data:
+    name: artifactory-postgres-data
