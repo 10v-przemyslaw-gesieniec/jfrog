@@ -193,7 +193,7 @@ Zapisz go. To jedyna rzecz chroniąca Twoje artefakty przed internetem —
 
 ```
 RAILWAY_DOCKERFILE_PATH=railway/read-proxy.Dockerfile
-UPSTREAM=https://${{artifactory.RAILWAY_PUBLIC_DOMAIN}}
+UPSTREAM=https://artifactory-production.up.railway.app
 ART_USER=admin
 ART_PASSWORD=<hasło admina z kroku 4>
 READ_TOKEN=<token z kroku 6>

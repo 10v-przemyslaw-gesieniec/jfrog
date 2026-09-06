@@ -52,8 +52,27 @@ READ_TOKEN = os.environ.get("READ_TOKEN", "").strip()
 PORT = int(os.environ.get("LISTEN_PORT") or os.environ.get("PORT") or "8083")
 ADDR = os.environ.get("LISTEN_ADDR", "0.0.0.0")
 
-if not UPSTREAM or not ART_USER or not ART_PASSWORD:
-    sys.exit("read-proxy: UPSTREAM, ART_USER and ART_PASSWORD must all be set")
+_missing = [name for name, value in (("UPSTREAM", UPSTREAM),
+                                     ("ART_USER", ART_USER),
+                                     ("ART_PASSWORD", ART_PASSWORD)) if not value]
+if _missing:
+    # Naming the empty variables - and showing what did arrive - turns a restart
+    # loop into a one-line fix. The password is never printed, only its shape.
+    print("read-proxy: co widzi kontener:", file=sys.stderr)
+    print(f"  UPSTREAM     = {UPSTREAM!r}", file=sys.stderr)
+    print(f"  ART_USER     = {ART_USER!r}", file=sys.stderr)
+    print(f"  ART_PASSWORD = {'(puste)' if not ART_PASSWORD else f'ustawione, {len(ART_PASSWORD)} znakow'}",
+          file=sys.stderr)
+    print(f"  READ_TOKEN   = {'(puste - proxy byloby OTWARTE)' if not READ_TOKEN else f'ustawione, {len(READ_TOKEN)} znakow'}",
+          file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Czeste przyczyny pustej wartosci:", file=sys.stderr)
+    print("  * odwolanie ${{serwis.ZMIENNA}} do serwisu o INNEJ nazwie -", file=sys.stderr)
+    print("    Railway podstawia wtedy pusty string, nie blad. Sprawdz nazwe", file=sys.stderr)
+    print("    serwisu w interfejsie albo wpisz adres wprost.", file=sys.stderr)
+    print("  * zmienne ustawione na innym serwisie niz ten.", file=sys.stderr)
+    print("  * wartosc z '#' albo znakiem nowej linii rozjechala Raw Editor.", file=sys.stderr)
+    sys.exit("read-proxy: brakuje zmiennych: " + ", ".join(_missing))
 
 AUTH = "Basic " + base64.b64encode(f"{ART_USER}:{ART_PASSWORD}".encode()).decode()
 ALLOWED = {"GET", "HEAD"}
